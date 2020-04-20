@@ -1,0 +1,46 @@
+string
+Redis 的字符串是动态字符串，是可以修改的字符串，内部结构实现上类似于 Java 的 ArrayList，采用预分配冗余空间的方式来减少内存的频繁分配，内部为当前字符串实际分配的空间 capacity 一般要高于实际字符串长度 len。字符串最大长度为 512M
+list
+Redis 的列表相当于 Java 语言里面的 LinkedList,插入和删除操作非常快，时间复杂度为 O(1)，但是索引定位很慢，时间复杂度为 O(n)
+hash
+Redis 的字典相当于 Java 语言里面的 HashMap，它是无序字典(数组 + 链表),Redis 的字典的值只能是字符串，因为 Java 的 HashMap 在字典很大时 ，rehash  是个耗时的操作 ，需要一次性全部 rehash 。 Redis 为了高性能 ，不能堵塞服务，所以采用了渐进式 rehash 策略。
+渐进式 rehash 会在 rehash 的同时，保留新旧两个 hash 结构，查询时会同时查询两个 hash 结构，然后在后续的定时任务中以及 hash 操作指令中，循序渐进地将旧 hash 的内容一点点迁移到新的 hash 结构中。当搬迁完成了，就会使用新的hash结构取而代之。
+set
+Redis 的集合相当于 Java 语言里面的 HashSet,无序,唯一. 内部实现相当于一个特殊的字典 ， 字典中所有的 value 都是一个值NULL。
+zset (有序集合)
+一方面它是一个 set，保证了内部 value 的唯一性，另一方面它可以给每个 value 赋予一个 score，代表这个 value 的排序权重。它的内部实现用的是「跳跃列表」。
+容器型数据结构的通用规则
+list/set/hash/zset 这四种数据结构是容器型数据结构，它们共享下面两条通用规则：
+create if not exists
+如果容器不存在，那就创建一个，再进行操作。比如 rpush 操作刚开始是没有列表的，Redis 就会自动创建一个，然后再 rpush 进去新元素。
+drop if no elements
+如果容器里元素没有了，那么立即删除元素，释放内存。这意味着 lpop 操作到最后一个元素，列表就消失了。
+过期时间
+Redis 所有的数据结构都可以设置过期时间，时间到了，Redis 会自动删除相应的对象。需要注意的是过期是以对象为单位，比如一个 hash 结构的过期是整个 hash 对象的过期，而不是其中的某个子 key。
+如果一个字符串已经设置了过期时间，然后你调用了 set 方法修改了它，它的过期时间会消失。
+
+redis cluster
+	多master的写入: 每条数据只能存在于一个master上，不同的master负责存储不同的数据，分布式的数据存储.
+　　 100w条数据，5个master，每个master就负责存储20w条数据，分布式数据存储
+　　默认情况下，redis cluster的核心的理念，主要是用slave做高可用的，每个master挂一两个slave，主要是做数据的热备，还有master故障时的主备切换，实现高可用的
+
+hash slot算法
+	在redis cluster写入数据的时候，其实是你可以将请求发送到任意一个master上去执行
+　　但是，每个master都会计算这个key对应的CRC16值，然后对16384个hashslot取模，找到key对应的hashslot，找到hashslot对应的master.
+　　如果对应的master就在自己本地的话，set mykey1 v1，mykey1这个key对应的hashslot就在自己本地，那么自己就处理掉了.
+　　但是如果计算出来的hashslot在其他master上 ，那么就会给客户端返回一个moved  error ，告诉你 ，你得到哪个master上去执行这条写入的命令
+
+基于单Redis节点的分布式锁
+获取锁  SET resource_name my_random_value NX PX 30000
+	my_random_value 是由客户端生成的一个随机字符串 ，它要保证在足够长的一段时间内 在所有客户端 的所有获取锁的请求中 都是唯一的。
+	NX表示只有当resource_name对应的key值不存在的时候才能SET成功。这保证了只有第一个请求的客户端才能获得锁，而其它客户端在锁被释放之前都无法获得锁。
+	PX 30000表示这个锁有一个30秒的自动过期时间。当然，这里30秒只是一个例子，客户端可以选择合适的过期时间。
+
+最后，当客户端完成了对共享资源的操作之后，执行下面的Redis Lua脚本来释放锁：
+
+	if redis.call("get",KEYS[1]) == ARGV[1] then
+	    return redis.call("del",KEYS[1])
+	else
+	    return 0
+	end
+这段Lua脚本在执行的时候要把前面的my_random_value作为ARGV[1]的值传进去，把resource_name作为KEYS[1]的值传进去。
